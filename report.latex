@@ -1,0 +1,467 @@
+\documentclass[a4paper,11pt]{article}
+
+% Pacchetti necessari
+\usepackage[utf8]{inputenc}
+\usepackage[italian]{babel}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{tabularx}
+\geometry{margin=2.5cm}
+
+% Stile codice
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.95}
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{blue},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,         
+    breaklines=true,                 
+    captionpos=b,                    
+    keepspaces=true,                 
+    numbers=left,                    
+    numbersep=5pt,                  
+    showspaces=false,                
+    showstringspaces=false,
+    showtabs=false,                  
+    tabsize=2
+}
+\lstset{style=mystyle}
+
+\title{Riconoscimento di Specie Animali da Registrazioni Audio\\
+\large Progetto BirdClef 2025}
+\author{Mauro Carlucci}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Questo documento descrive l'approccio utilizzato per affrontare la sfida BirdClef 2025, una competizione di bioacustica su Kaggle che mira a identificare diverse specie animali (uccelli, anfibi, mammiferi, insetti) attraverso le loro impronte sonore. Il progetto esplora varie tecniche di pre-processing audio, architetture di deep learning e strategie di data augmentation per migliorare le performance di classificazione, con particolare attenzione alla gestione di classi rare e dataset sbilanciati. Partendo da una baseline ispirata all'approccio vincitore dell'edizione precedente, sono state implementate diverse ottimizzazioni incrementali che hanno portato a miglioramenti significativi delle performance.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Introduzione al problema}
+
+\subsection{Il contesto della competizione}
+La competizione BirdClef 2025 su Kaggle si focalizza sull'identificazione automatica di specie animali attraverso le loro impronte sonore. Le registrazioni provengono dalla Riserva Naturale El Silencio in Colombia, un'area protetta di circa 5.407 acri che ospita 295 specie di uccelli, 34 anfibi, 69 mammiferi, 50 rettili e quasi 500 specie vegetali. Questa riserva è particolarmente significativa poiché parte del territorio, precedentemente utilizzato per l'allevamento di bestiame, è ora oggetto di un progetto di ripristino ecologico.
+
+\subsection{Obiettivi specifici}
+Gli obiettivi principali del progetto sono:
+\begin{itemize}
+    \item Sviluppare algoritmi in grado di identificare specie appartenenti a diversi gruppi tassonomici (uccelli, anfibi, mammiferi, insetti)
+    \item Addestrare modelli efficaci con dataset limitati, specialmente per specie rare o in via di estinzione
+    \item Migliorare le performance utilizzando tecniche innovative di data augmentation e transfer learning
+\end{itemize}
+
+\subsection{Metriche di valutazione}
+La competizione utilizza il punteggio Row-wise Micro-Averaged F1 come metrica principale di valutazione. Questa metrica è particolarmente appropriata per problemi di classificazione multi-etichetta sbilanciati, dove un'osservazione può appartenere simultaneamente a più classi e alcune classi possono essere significativamente sottorappresentate rispetto ad altre.
+
+\subsection{Approccio iniziale}
+Per questo progetto, abbiamo deciso di strutturare la nostra baseline a partire dall'approccio vincitore della competizione BirdClef dell'anno precedente. Questo ci ha fornito un solido punto di partenza, consentendoci di comprendere meglio le tecniche efficaci già validate. L'obiettivo era poi di sperimentare nuove tecniche e ottimizzazioni incrementali per migliorare ulteriormente le performance.
+
+\section{Dataset e preprocessing}
+
+\subsection{Struttura del dataset}
+Il dataset fornito comprende:
+
+\begin{itemize}
+    \item \textbf{train\_audio/}: Registrazioni brevi di suoni individuali di uccelli, anfibi, mammiferi e insetti
+    \item \textbf{test\_soundscapes/}: Circa 700 registrazioni di 1 minuto utilizzate per la valutazione finale
+    \item \textbf{train\_soundscapes/}: Dati audio non etichettati dalle stesse località dei test
+    \item \textbf{train.csv}: Metadati per i dati di addestramento, inclusi rating di qualità
+    \item \textbf{taxonomy.csv}: Informazioni tassonomiche sulle specie
+    \item \textbf{sample\_submission.csv}: Template per la submission con tutte le specie da prevedere
+\end{itemize}
+
+\subsection{Analisi esplorativa dei dati (EDA)}
+L'analisi iniziale ha evidenziato diverse caratteristiche importanti del dataset:
+
+\begin{itemize}
+    \item \textbf{Forte sbilanciamento}: Alcune specie hanno centinaia di esempi, mentre molte altre ne hanno meno di 5
+    \item \textbf{Indice di Gini} circa 0.6, indicativo di un livello significativo di sbilanciamento
+    \item \textbf{Classi rare}: Circa il 30\% delle specie ha meno di 50 esempi
+    \item \textbf{Qualità variabile}: I rating di qualità (da 1 a 5) mostrano che le classi rare tendono ad avere rating più bassi
+\end{itemize}
+
+\subsection{Preprocessing audio}
+Per il preprocessing delle registrazioni audio, abbiamo implementato la seguente pipeline:
+
+\begin{enumerate}
+    \item \textbf{Caricamento audio}: Utilizzo di librosa con sample rate di 32000 Hz
+    \item \textbf{Estrazione segmenti}: Selezione di segmenti di 5 secondi in posizioni strategiche (inizio, centro, fine)
+    \item \textbf{Generazione spettrogrammi Mel}: Conversione in spettrogrammi con 128 bande Mel
+    \item \textbf{Normalizzazione}: Conversione in scala logaritmica (dB) e normalizzazione nell'intervallo [0,1]
+\end{enumerate}
+
+\subsubsection{Evoluzione dei parametri di preprocessing}
+Nel corso del progetto, abbiamo sperimentato diverse configurazioni dei parametri per il preprocessing audio:
+
+\begin{itemize}
+    \item \textbf{Configurazione iniziale (Esperimento 1-2)}: 
+        \begin{itemize}
+            \item Sample rate: 32000 Hz
+            \item Durata segmenti: 5 secondi
+            \item Dimensione FFT: 2048
+            \item Hop length: 512
+            \item Frequenza minima: 0 Hz
+            \item Frequenza massima: 16000 Hz (SR/2)
+        \end{itemize}
+    
+    \item \textbf{Configurazione ottimizzata (Esperimento 3+)}: 
+        \begin{itemize}
+            \item Sample rate: 32000 Hz
+            \item Durata segmenti: 5 secondi
+            \item Dimensione FFT: 1024 (ridotta per migliore risoluzione temporale)
+            \item Hop length: 500 (modificato per ottimizzare la dimensione dell'output)
+            \item Frequenza minima: 40 Hz (aumentata per eliminare frequenze molto basse indesiderate)
+            \item Frequenza massima: 15000 Hz (ridotta per concentrarsi su range più utile)
+            \item Power: 2 (esponente aggiunto per calcolo spettrogramma)
+        \end{itemize}
+\end{itemize}
+
+\section{Modelli implementati}
+
+\subsection{SimpleCNN (Prima baseline)}
+Il primo approccio ha utilizzato una CNN semplice con la seguente architettura:
+\begin{itemize}
+    \item 3 blocchi convoluzionali (Conv2D + ReLU + MaxPool2D)
+    \item Adaptive pooling per garantire dimensioni di output fisse
+    \item 2 layer fully connected con dropout (0.5)
+    \item Output layer con dimensione pari al numero di classi
+    \item Loss function: BCEWithLogitsLoss per classificazione multi-etichetta
+\end{itemize}
+
+Questo modello è stato scelto come baseline per la sua semplicità e rapidità di addestramento, permettendoci di stabilire un punto di riferimento iniziale e testare rapidamente diverse configurazioni di preprocessing e data augmentation.
+
+\begin{lstlisting}[language=Python, caption=Implementazione SimpleCNN]
+class SimpleBirdCNN(nn.Module):
+    def __init__(self, num_classes=config.N_CLASSES):
+        super(SimpleBirdCNN, self).__init__()
+        # Primo blocco convoluzionale
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
+        self.relu1 = nn.ReLU()
+        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
+        
+        # Secondo blocco convoluzionale
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
+        self.relu2 = nn.ReLU()
+        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
+        
+        # Terzo blocco convoluzionale
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
+        self.relu3 = nn.ReLU()
+        self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)
+        
+        # Adaptive pooling e fully connected layers
+        self.adaptive_pool = nn.AdaptiveMaxPool2d((4, 4))
+        flattened_size = 128 * 4 * 4
+        self.fc1 = nn.Linear(flattened_size, 256)
+        self.relu4 = nn.ReLU()
+        self.dropout = nn.Dropout(0.5)
+        self.fc2 = nn.Linear(256, num_classes)
+\end{lstlisting}
+
+\subsection{EfficientNet (Approccio avanzato)}
+In seguito ai test con la CNN semplice, abbiamo implementato un modello basato su EfficientNet pre-addestrato:
+\begin{itemize}
+    \item Backbone: EfficientNet-B0 da timm, con pesi pre-addestrati su ImageNet
+    \item Adattamento per input a singolo canale: replicazione del canale per compatibilità con input RGB
+    \item Classificatore personalizzato: MLP con due layer e dropout (0.3, 0.2)
+    \item Ottimizzatore: AdamW con learning rates differenziati (più basso per il backbone, più alto per il classificatore)
+    \item Scheduler: CosineAnnealingLR per graduale riduzione del learning rate
+\end{itemize}
+
+\begin{lstlisting}[language=Python, caption=Implementazione di EfficientNet per classificazione audio]
+class EfficientNetBirdClassifier(nn.Module):
+    def __init__(self, num_classes, pretrained=True, model_name='efficientnet_b0'):
+        super(EfficientNetBirdClassifier, self).__init__()
+        
+        # Backbone pre-addestrato
+        self.efficientnet = timm.create_model(
+            model_name,
+            pretrained=pretrained,
+            num_classes=0
+        )
+        
+        # Dimensione dell'output del feature extractor
+        classifier_in_features = self.efficientnet.num_features
+        
+        # Classificatore con dropout
+        self.classifier = nn.Sequential(
+            nn.Dropout(0.3),
+            nn.Linear(classifier_in_features, 512),
+            nn.ReLU(),
+            nn.BatchNorm1d(512),
+            nn.Dropout(0.2),
+            nn.Linear(512, num_classes)
+        )
+    
+    def forward(self, x):
+        # Replicazione canale se input monocromatico
+        if x.size(1) == 1:
+            x = x.repeat(1, 3, 1, 1)
+        
+        # Forward attraverso backbone e classificatore
+        features = self.efficientnet(x)
+        output = self.classifier(features)
+        return output
+\end{lstlisting}
+
+\section{Tecniche di miglioramento}
+
+\subsection{Strategie di estrazione dei segmenti audio}
+Durante il progetto abbiamo sperimentato diverse strategie per l'estrazione dei segmenti audio:
+
+\subsubsection{Segmento centrale fisso (Esperimento 1)}
+Nella prima fase, abbiamo estratto solo il segmento centrale di 5 secondi da ogni registrazione. Questo approccio semplice ha fornito risultati discreti, ma non sfruttava completamente le informazioni contenute nelle registrazioni più lunghe.
+
+\subsubsection{Segmenti multipli fissi: 20\%, 50\%, 80\% (Esperimento 2)}
+Abbiamo successivamente implementato l'estrazione di tre segmenti fissi da ogni registrazione, posizionati al 20\%, 50\% e 80\% della durata totale. Questo ha aumentato la quantità di dati disponibili per il training e ha migliorato la robustezza del modello.
+
+\subsubsection{Dataset adattivo multi-segmento (Esperimento 3+)}
+Infine, abbiamo sviluppato un approccio adattivo che estrae un numero variabile di segmenti in base alla lunghezza della registrazione:
+
+\begin{itemize}
+    \item \textbf{Clip corte} (<7.5s): solo segmento centrale
+    \item \textbf{Clip medie} (<12.5s): segmenti iniziale (20\%) e finale (80\%)
+    \item \textbf{Clip lunghe} (≥12.5s): segmenti iniziale (20\%), centrale (50\%) e finale (80\%)
+\end{itemize}
+
+Questo approccio ha permesso di espandere efficacemente il dataset di training di circa 2.3 volte, migliorando la robustezza del modello.
+
+\begin{lstlisting}[language=Python, caption=Implementazione dell'estrazione segmenti adattiva]
+# Determina quali segmenti usare in base alla durata
+if total_duration < config.DURATION * 1.5:
+    # Clip troppo corta per multiple segmenti, usa solo il centro
+    segments = ['center']
+elif total_duration < config.DURATION * 2.5:
+    # Clip media, usa inizio e fine
+    segments = ['start', 'end']
+else:
+    # Clip abbastanza lunga, usa tutti e tre i segmenti
+    segments = ['start', 'center', 'end']
+\end{lstlisting}
+
+\subsection{Data augmentation audio}
+Abbiamo implementato diverse tecniche di data augmentation specifiche per audio:
+
+\begin{itemize}
+    \item \textbf{Random segment selection}: Selezione casuale di segmenti con probabilità configurabile (p=0.5). Questa tecnica è stata particolarmente efficace per aumentare la variabilità degli esempi di training.
+    
+    \item \textbf{XY masking}: Mascheramento casuale di porzioni dello spettrogramma sia sull'asse temporale (10-20\% della larghezza) che frequenziale (10-20\% dell'altezza). Questa tecnica migliora la robustezza del modello a frequenze o parti temporali mancanti.
+    
+    \item \textbf{Horizontal cutmix}: Miscelazione di segmenti orizzontali tra spettrogrammi diversi, con conseguente mix delle etichette proporzionale alla porzione mixata. Abbiamo applicato questa tecnica con probabilità 0.25 per ogni esempio nel batch.
+\end{itemize}
+
+\begin{lstlisting}[language=Python, caption=Implementazione di horizontal cutmix]
+def horizontal_cutmix_collate(batch, p_cutmix=0.25):
+    inputs = torch.stack([x[0] for x in batch])
+    targets = torch.stack([x[1] for x in batch])
+    batch_size = len(inputs)
+    
+    if batch_size > 1:
+        for i in range(batch_size):
+            if np.random.rand() < p_cutmix:
+                j = np.random.randint(0, batch_size)
+                if i != j:
+                    width = inputs.shape[3]
+                    cut_point = np.random.randint(int(width * 0.25), int(width * 0.75))
+                    mix_ratio = cut_point / width
+                    inputs[i, :, :, :cut_point] = inputs[j, :, :, :cut_point]
+                    targets[i] = targets[i] * (1 - mix_ratio) + targets[j] * mix_ratio
+    
+    return inputs, targets
+\end{lstlisting}
+
+\subsection{Bilanciamento strategico del dataset}
+Per gestire lo sbilanciamento delle classi, abbiamo implementato una strategia di bilanciamento che:
+
+\begin{itemize}
+    \item Identifica le classi abbondanti (>150 esempi nei primi esperimenti, poi ottimizzato a >200)
+    \item Rimuove selettivamente il 30\% degli esempi con rating di qualità basso (1-3) da queste classi (aumentato al 40\% nei test successivi)
+    \item Mantiene tutti gli esempi delle classi rare per massimizzare l'apprendimento
+\end{itemize}
+
+Questo approccio ha permesso di ridurre lo sbilanciamento senza perdere informazioni critiche sulle classi rare, migliorando significativamente le prestazioni complessive del sistema.
+
+\subsection{Ottimizzazione dell'addestramento}
+
+\subsubsection{Learning rates differenziati}
+Per ottimizzare il processo di transfer learning con EfficientNet:
+
+\begin{itemize}
+    \item \textbf{Esperimento 3}: 
+        \begin{itemize}
+            \item Backbone pre-addestrato: lr\_base = 1e-3
+            \item Classificatore finale: lr\_head = 3e-3
+        \end{itemize}
+        
+    \item \textbf{Esperimenti 4+}: 
+        \begin{itemize}
+            \item Backbone pre-addestrato: lr\_base = 5e-4 (ridotto per un fine-tuning più delicato)
+            \item Classificatore finale: lr\_head = 1e-3 (ridotto proporzionalmente)
+            \item Ottimizzatore: AdamW con weight decay 3e-4
+        \end{itemize}
+\end{itemize}
+
+\subsubsection{Scheduler per il learning rate}
+Abbiamo sperimentato diverse strategie di scheduling:
+
+\begin{itemize}
+    \item \textbf{Esperimenti 1-3}: ReduceLROnPlateau, che riduce il learning rate quando la validation loss smette di migliorare
+    \item \textbf{Esperimenti 4+}: CosineAnnealingLR, che riduce gradualmente il learning rate seguendo una curva cosinusoidale, con eta\_min=1e-6
+\end{itemize}
+
+\subsubsection{Early stopping e checkpoint}
+Abbiamo implementato:
+\begin{itemize}
+    \item Early stopping con una patience di 3 epoche
+    \item Salvataggio del miglior modello basato sulla validation loss
+    \item Checkpoint per riprendere l'addestramento in caso di interruzioni
+\end{itemize}
+
+\subsection{Dimensioni del batch}
+Nel corso degli esperimenti, abbiamo progressivamente aumentato la dimensione del batch:
+\begin{itemize}
+    \item \textbf{Esperimenti 1-2}: Batch size = 32
+    \item \textbf{Esperimenti 3+}: Batch size = 96
+\end{itemize}
+
+L'aumento della dimensione del batch ha permesso un addestramento più stabile e una convergenza più rapida, soprattutto con l'architettura EfficientNet.
+
+\section{Evoluzione degli esperimenti e risultati}
+
+\subsection{Esperimento 1: SimpleCNN con segmento centrale (v6-v7)}
+\begin{itemize}
+    \item \textbf{Approccio}: Utilizzo di un solo segmento centrale da ciascuna registrazione
+    \item \textbf{Architettura}: CNN semplice con 3 blocchi convoluzionali
+    \item \textbf{Parametri}: Learning rate = 1e-3, Batch size = 32, Dropout = 0.5
+    \item \textbf{Risultato}: F1-score = 0.581, validation loss intorno a 0.05
+    \item \textbf{Limitazioni}: Performance scarse su classi rare, overfitting dopo poche epoche
+\end{itemize}
+
+\subsection{Esperimento 2: SimpleCNN con multi-segmento fisso (v10)}
+\begin{itemize}
+    \item \textbf{Miglioramento}: Implementazione dell'estrazione dei segmenti al 20\%, 50\% e 80\%
+    \item \textbf{Architettura}: CNN semplice invariata
+    \item \textbf{Bilanciamento}: Rimozione del 30\% degli esempi a basso rating dalle classi con >200 esempi
+    \item \textbf{Risultato}: F1-score = 0.665 (+14.5\% rispetto all'esperimento 1)
+    \item \textbf{Osservazione}: Riduzione dell'overfitting grazie all'aumento di dati disponibili
+\end{itemize}
+
+\subsection{Esperimento 3: EfficientNet con dataset adattivo (v11)}
+\begin{itemize}
+    \item \textbf{Miglioramenti}: 
+        \begin{itemize}
+            \item Passaggio a EfficientNet-B0 pre-addestrato
+            \item Dataset adattivo multi-segmento
+            \item Learning rates differenziati (1e-3 per backbone, 3e-3 per classificatore)
+        \end{itemize}
+    \item \textbf{Augmentation}: Primi test con XY masking e random segments
+    \item \textbf{Parametri}: Batch size aumentato a 96
+    \item \textbf{Risultato}: F1-score = 0.712 (+7.1\% rispetto all'esperimento 2)
+    \item \textbf{Note}: Significativo miglioramento di generalizzazione
+\end{itemize}
+
+\subsection{Esperimento 4: EfficientNet con cutmix e ottimizzazione (v13-v14)}
+\begin{itemize}
+    \item \textbf{Miglioramenti}:
+        \begin{itemize}
+            \item Aggiunta di horizontal cutmix (p=0.25)
+            \item Riduzione dei learning rate (5e-4 per backbone, 1e-3 per classificatore)
+            \item Passaggio a CosineAnnealingLR
+        \end{itemize}
+    \item \textbf{Bilanciamento}: Rimozione del 40\% degli esempi con rating bassi dalle classi con >150 esempi
+    \item \textbf{Risultato}: Inizialmente F1-score = 0.464 (v13, a causa di un bug), poi corretto a 0.743 (v14)
+    \item \textbf{Note}: Miglior risultato ottenuto in tutti gli esperimenti
+\end{itemize}
+
+\subsection{Esperimento 5: Ottimizzazione parametri e fine-tuning (v17-v18)}
+\begin{itemize}
+    \item \textbf{Ottimizzazioni}: 
+        \begin{itemize}
+            \item Fine-tuning dei parametri del Mel spettrogramma
+            \item Modifiche minori alla strategia di augmentation
+            \item Regolazione dei parametri del dropout (0.3 e 0.2)
+        \end{itemize}
+    \item \textbf{Risultati}: F1-score = 0.741 (v17) e 0.740 (v18)
+    \item \textbf{Note}: Leggero calo rispetto alla v14, probabilmente dovuto alla variabilità intrinseca dell'addestramento
+\end{itemize}
+
+\section{Riepilogo dei risultati}
+
+La seguente tabella riassume l'evoluzione delle performance nei diversi esperimenti, riportando le principali modifiche apportate e i risultati ottenuti:
+
+\begin{table}[ht]
+\centering
+\caption{Riepilogo delle performance per versione}
+\begin{tabularx}{\textwidth}{|c|X|c|}
+\hline
+\textbf{Versione} & \textbf{Modifiche principali} & \textbf{F1-score} \\
+\hline
+v6-v7 & SimpleCNN con segmento centrale, parametri base & 0.581 \\
+\hline
+v10 & SimpleCNN con segmenti al 20\%, 50\%, 80\%, bilanciamento classi (30\%) & 0.665 \\
+\hline
+v11 & EfficientNet-B0, dataset adattivo multi-segmento, batch size 96, LR differenziati & 0.712 \\
+\hline
+v13 & EfficientNet con cutmix e ottimizzazioni (bug nell'implementazione) & 0.464 \\
+\hline
+v14 & Correzione bug, horizontal cutmix, LR ridotti, CosineAnnealingLR, bilanciamento 40\% & \textbf{0.743} \\
+\hline
+v17 & Fine-tuning parametri Mel spettrogramma e augmentation & 0.741 \\
+\hline
+v18 & Ulteriori piccole ottimizzazioni sui parametri & 0.740 \\
+\hline
+\end{tabularx}
+\end{table}
+
+Il miglioramento complessivo dal primo all'ultimo esperimento è stato del +27.7\% in termini di F1-score, con la configurazione ottimale raggiunta nella versione 14.
+
+\section{Conclusioni e direzioni future}
+
+\subsection{Riepilogo dei progressi}
+Il progetto ha mostrato miglioramenti significativi attraverso:
+\begin{itemize}
+    \item Passaggio da una semplice CNN a un'architettura EfficientNet pre-addestrata
+    \item Approccio multi-segmento adattivo per massimizzare l'utilizzo dei dati
+    \item Tecniche di data augmentation specifiche per dati audio
+    \item Transfer learning con ottimizzazione mirata dei parametri
+    \item Bilanciamento strategico per gestire classi rare
+\end{itemize}
+
+\subsection{Lezioni apprese}
+\begin{itemize}
+    \item L'estrazione di multipli segmenti è particolarmente efficace per registrazioni audio di lunghezza variabile
+    \item Le tecniche di augmentation specifiche per il dominio audio superano quelle generiche
+    \item Il bilanciamento strategico (rimozione selettiva) è più efficace del semplice undersampling/oversampling
+    \item La regolazione fine dei learning rate e l'uso di scheduler appropriati sono cruciali per il transfer learning
+    \item L'ottimizzazione dei parametri del Mel spectrogram ha meno impatto rispetto alle tecniche di augmentation
+\end{itemize}
+
+\subsection{Direzioni future}
+Potenziali aree di miglioramento includono:
+\begin{itemize}
+    \item \textbf{Modelli avanzati}: Sperimentare con EfficientNet-B1/B2 o architetture transformer
+    \item \textbf{Meta-learning}: Tecniche few-shot learning per classi estremamente rare
+    \item \textbf{Ensemble}: Combinare modelli con diversi iperparametri dello spettrogramma Mel
+    \item \textbf{Post-processing}: Ottimizzare le soglie di confidenza per ciascuna classe
+    \item \textbf{Unsupervised learning}: Sfruttare train\_soundscapes non etichettati per pre-training
+\end{itemize}
+
+\end{document}
