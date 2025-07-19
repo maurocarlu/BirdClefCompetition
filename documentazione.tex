@@ -1,0 +1,479 @@
+\typeout{ERTS template}
+\typeout{Template version updated March 17, 2025}
+
+% LaTeX template derived from IJPHM template. Creative Commons BY 4.0 license.
+
+% IMPORTANT: Document Class
+% Change the year of the edition
+% Change DRAFT to ERTS before submission
+\documentclass[ERTS, 2025]{ERTS} 
+
+%Declare Packages - do not remove the preloaded ones
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{url}
+
+\makeatletter
+\AddToHook{cmd/maketitle/before}{\let\thetitle\@title}
+\makeatother
+
+%% Author's packages & commands
+
+%%
+
+\begin{document}
+
+% Paper Title
+\title{BirdCLEF Competition: Automatic Classification of Bird Calls through Deep Learning}
+
+% Authors List
+\author{%			
+    Mauro Carlucci - m.carlucci66@studenti.uniba.it\authorNumber
+}
+
+% Author Affiliations
+\address{% This is a tabular environment so each affiliation needs to be separated by "\\" or "\tabularnewline"
+    \affiliation{University of Bari Aldo Moro, Bari, Italy}{ %add emails
+        {}
+        } % emails input
+}
+
+% Create the title
+\maketitle
+
+\chead{\thetitle}
+
+\pagestyle{fancy}
+
+\thispagestyle{plain}
+
+% License Information, provide first author's name "FirstName LastName".
+% If more than one author, please add '~et al.', e.g. \licenseFootnote{John Doe~et al.}
+
+% Abstract
+\begin{abstract}
+This work presents a comprehensive description of the workflow developed for participation in the Kaggle BirdCLEF 2025 competition. The project details the technologies and strategies implemented, including the design of a convolutional neural network-based pipeline for audio data analysis and preprocessing through mel-scale spectrograms. The approach was informed by an extensive review of scientific literature and analysis of state-of-the-art techniques proposed in previous competitions, with the aim of achieving the best possible ranking. This paper systematically documents all significant experiments, methodological choices, and their respective contributions to the final solution, highlighting the iterative process of optimization and the impact of each component on the overall performance. The results demonstrate the effectiveness of the adopted deep learning techniques for bioacoustic signal processing and species identification, culminating in an F1-score of 0.796 in classifying 206 animal species.
+\end{abstract}
+
+\section{Introduction}
+Automatic recognition of bird calls represents an important challenge in the field of bioacoustics and environmental conservation. The BirdCLEF competition provides a dataset of labeled audio recordings for the development of automatic classification systems, enabling researchers to advance the state-of-the-art in acoustic species identification.
+
+The objective of this project is to develop a workflow capable of automatically identifying animal species from their vocalizations, contributing to biodiversity monitoring efforts. Such systems have significant applications in ecological research, conservation biology, and automated wildlife monitoring systems.
+
+\section{Dataset and Preprocessing}
+\subsection{Dataset Description}
+The BirdCLEF dataset contains labeled audio recordings representing 206 different animal species with varying duration. Audio clips exhibit diverse quality levels, rated from 0 to 5, and generally include environmental noise and background sounds from other species beyond the primary labeled species.
+
+Training data consisted of labeled recordings stored in the ``train\_audio'' folder, with additional unlabeled data provided for optional use. The competition evaluation process involved submitting code that would be executed on a hidden test set of 700 one-minute soundscape files (``test\_soundscape'' folder) containing natural audio recordings.
+
+For a valid submission, participants were required to generate predictions for each 5-second segment of the test soundscapes, providing probability estimates for all 206 species in each temporal window.
+
+The dataset includes diverse acoustic environments and recording conditions, providing a realistic challenge for automatic classification systems in natural soundscape analysis.
+
+\subsection{Audio Preprocessing}
+Audio recordings were processed through a comprehensive preprocessing pipeline designed to standardize input format while preserving acoustic characteristics relevant for species identification. The preprocessing workflow consists of four main stages: segment extraction, spectral transformation, normalization, and data augmentation.
+
+\subsubsection{Segment Extraction and Duration Optimization}
+Given the variable duration of audio recordings in the dataset (ranging from seconds to minutes), a systematic approach was developed to extract fixed-duration segments. Multiple configurations were evaluated to optimize both segment duration and extraction strategy.
+
+\textbf{Duration Analysis:} Three different segment durations were tested (5, 10, and 15 seconds), with \textbf{5-second segments} providing the optimal balance between computational efficiency and acoustic information capture.
+
+\textbf{Extraction Strategies:} Three different segment selection approaches were evaluated: center extraction (single segment from the middle of the recording), fixed multi-segment extraction (three segments from beginning, center, and end), and random single segment extraction.
+
+After systematic evaluation, the optimal configuration was determined to be \textbf{5-second segments with random extraction}, providing the best trade-off between performance and computational efficiency while introducing beneficial variance during training.
+
+\subsubsection{Spectral Transformation}
+To extract meaningful features from audio signals for classification, we converted each waveform into a mel spectrogram—a time-frequency representation that emphasizes perceptually relevant information.
+
+\textbf{What are Mel Spectrograms?}
+
+Mel spectrograms represent audio in terms of time and frequency, using a frequency scale (mel scale) that mimics human pitch perception. Unlike linear scales, the mel scale spaces frequency bins more densely at lower frequencies, aligning better with how humans (and many animals) perceive sound.
+
+The transformation from frequency (Hz) to mel scale is given by:
+\begin{equation}
+m = 2595 \log_{10}\left(1 + \frac{f}{700}\right)
+\end{equation}
+where $f$ is the frequency in Hz and $m$ is the corresponding mel frequency.
+
+\textbf{Generation Process}
+
+The process of computing a mel spectrogram consists of:
+
+1. \textbf{Short-Time Fourier Transform (STFT)}: The signal is divided into overlapping frames, and each is transformed into the frequency domain using the Discrete Fourier Transform (DFT), implemented efficiently via FFT:
+\begin{equation}
+X(k) = \sum_{n=0}^{N-1} x(n) \cdot e^{-j2\pi kn/N}
+\end{equation}
+where $x(n)$ is the input frame of length $N$, and $X(k)$ is the complex-valued spectrum at frequency bin $k$.
+
+2. \textbf{Power Spectrum Calculation}: The magnitude squared of the STFT yields the power spectral density estimate:
+\begin{equation}
+P(k) = |X(k)|^2
+\end{equation}
+
+3. \textbf{Mel Filter Bank Application}: A set of overlapping triangular filters, spaced according to the mel scale, is applied to the power spectrum:
+\begin{equation}
+S_{\text{mel}}(b) = \sum_{k=0}^{N/2} P(k) \cdot M_b(k)
+\end{equation}
+where $M_b(k)$ is the response of the $b$-th mel filter. This maps the linear frequency spectrum into the perceptual mel scale.
+
+\textbf{Implementation Parameters}
+
+The following parameters were used to compute mel spectrograms from raw audio:
+
+\begin{itemize}
+    \item \textbf{Sample rate}: 32,000 Hz – Determines time resolution and maximum frequency
+    \item \textbf{Number of mel bands}: 224 – Number of filters applied, i.e., frequency bins in the mel scale
+    \item \textbf{FFT size}: 2,048 samples – Frame size used in the STFT; defines frequency resolution (~15.625 Hz)
+    \item \textbf{Hop length}: 512 samples – Step size between frames; controls overlap and time resolution
+    \item \textbf{Frequency range}: 48–16,000 Hz – Focused on the frequency range most relevant for bird vocalizations
+\end{itemize}
+
+
+The resulting mel spectrograms are converted to decibel scale through logarithmic compression and normalized using min-max scaling to ensure consistent input scaling for the neural network. Finally, spectrograms are resized to 224×224 pixels using bicubic interpolation to match standard computer vision model inputs.
+
+\subsubsection{Normalization}
+The mel spectrograms undergo a power-to-decibel conversion followed by min-max normalization to ensure consistent input scaling across samples:
+
+\begin{equation}
+S_{\text{dB}} = 10 \log_{10}\left(\max(S_{\text{mel}}, 10^{-10})\right)
+\end{equation}
+
+\begin{equation}
+S_{\text{norm}} = \frac{S_{\text{dB}} - \min(S_{\text{dB}})}{\max(S_{\text{dB}}) - \min(S_{\text{dB}})}
+\end{equation}
+
+This normalization step preserves the relative spectral dynamics while mapping all spectrogram values to the [0, 1] range, improving training stability and interpretability for species classification.
+\subsubsection{Data Augmentation}
+To address dataset imbalance and enhance model robustness, two distinct augmentation strategies were applied: one to artificially expand low-resource classes before training, and another directly during training to regularize the model.
+
+\textbf{Time-Domain Augmentations (used for class balancing)}
+\begin{itemize}
+    \item \textit{Time Shifting}: Random temporal displacement within ±15\% of clip duration, applied with rollover using the \texttt{Shift} transform.
+    \item \textit{Time Masking}: Random temporal segments are zeroed out using \texttt{TimeMask}, with mask durations between 1–3\% of the total audio length.
+    \item \textit{Additive Gaussian Noise (tested only)}: Synthetic noise with SNR between 20–40 dB added via \texttt{AddGaussianNoise}. Evaluated but excluded due to negative performance impact.
+\end{itemize}
+
+\textbf{Frequency-Domain Augmentations (used for class balancing)}
+\begin{itemize}
+    \item \textit{Band-Stop Filtering}: Random suppression of narrow frequency bands using \texttt{BandStopFilter}, with bandwidths between 5–30\% and center frequencies ranging from 1 to 15 kHz.
+\end{itemize}
+
+\textbf{Mixup for Data Expansion (used for class balancing)}
+For classes with fewer than 40 training examples, a mixup strategy was applied to generate new interpolated samples:
+\begin{equation}
+x_{\text{mixed}} = \lambda x_i + (1-\lambda) x_j
+\quad \text{with} \quad
+\lambda \sim \text{Beta}(\alpha, \alpha), \ \alpha = 0.4
+\end{equation}
+
+\begin{equation}
+y_{\text{mixed}} = \lambda y_i + (1-\lambda) y_j
+\end{equation}
+
+To prevent clipping, amplitude normalization is applied post-mixup:
+\begin{equation}
+x_{\text{normalized}} = \frac{x_{\text{mixed}}}{\max(|x_{\text{mixed}}|) + \epsilon}
+\end{equation}
+
+\textbf{Spectrogram-Based Regularization (applied during training)}
+In addition to class-balancing augmentation, two spectrogram-based transformations were applied to all training examples (regardless of class size), with fixed probabilities:
+\begin{itemize}
+    \item \textit{XY Masking} (p = 0.4): Independent masking on the time (X) and frequency (Y) axes of the mel spectrogram. Each mask occludes 10–20\% of the respective dimension, encouraging invariance to local dropouts.
+    \item \textit{Horizontal CutMix} (p = 0.4): A random time segment from one spectrogram is replaced by the corresponding region from another. This simulates abrupt vocal interruptions and promotes compositional learning.
+\end{itemize}
+
+\textbf{Class-Conditional Augmentation Policy (for low-resource classes)}
+Data balancing augmentations (mixup, time shift, band-stop, time masking) were selectively applied to classes with fewer than 40 training examples. The augmentation type was sampled from the following probability distribution:
+\begin{itemize}
+    \item Mixup: 70\%
+    \item Time shifting: 15\%
+    \item Time shift + band-stop filter: 10\%
+    \item Time shift + time masking: 5\%
+\end{itemize}
+
+\textbf{Dataset Splitting and Validation Integrity}
+The dataset was split into training and validation sets using a stratified strategy. To preserve evaluation integrity:
+\begin{itemize}
+    \item The validation set did not contain any class with fewer than or equal to 2 examples.
+    \item Class-balancing augmentations were performed exclusively on the training set to prevent augmented samples from contaminating validation metrics.
+    \item No test set was constructed locally, as the official test set was hidden during the competition and used for final evaluation.
+\end{itemize}
+
+Additionally, strategic downsampling was applied to highly represented classes (>180 examples) by removing 50\% of recordings with quality ratings $\leq$3, reducing dataset imbalance while preserving high-quality training data.
+
+\section{Methodology}
+\subsection{Model Architecture}
+The classification system is built upon the EfficientNet family of convolutional neural networks, specifically leveraging transfer learning from pretrained models to address the bird call classification task.
+
+\textbf{EfficientNet Architecture Overview}
+EfficientNet represents a systematic approach to scaling convolutional neural networks that achieves superior performance through compound scaling of network depth, width, and resolution. Unlike traditional scaling methods that arbitrarily increase one dimension, EfficientNet uses a compound coefficient to uniformly scale all three dimensions according to a set of fixed scaling coefficients, optimizing the trade-off between accuracy and computational efficiency.
+
+\textbf{EfficientNet-B0 Base Model}
+
+The EfficientNet-B0 architecture begins with a stem layer that prepares the input for deeper processing. This initial stage consists of:
+\begin{itemize}
+    \item \textbf{Input layer}: A 224×224×3 image, where mel spectrograms are replicated across three channels
+    \item \textbf{Convolution}: A 3×3 convolution with 32 filters and stride 2 to reduce spatial resolution
+    \item \textbf{Batch Normalization}: Helps stabilize and accelerate training
+    \item \textbf{Swish Activation}: Enables smoother learning compared to ReLU
+\end{itemize}
+
+This processed output is then passed to the main part of the network, which includes a series of MBConv blocks and a custom classification head tailored for the task.
+
+\textbf{Evaluated Model Variants}
+Three specific EfficientNet implementations were systematically evaluated:
+
+1. \textbf{EfficientNet-B0 (ImageNet pretrained)}: Standard EfficientNet-B0 pretrained on the ImageNet-1K dataset, providing general visual feature representations transferable to spectrogram analysis.
+
+2. \textbf{tf\_efficientnet\_b0.ns\_jft\_in1k}: An enhanced version incorporating Noisy Student training methodology. The Noisy Student (NS) technique involves iterative semi-supervised learning where a teacher model generates pseudo-labels for unlabeled data, and a student model learns from both labeled and pseudo-labeled data with added noise during training. This model was pretrained on the larger JFT dataset before fine-tuning on ImageNet, resulting in improved robustness and generalization capabilities.
+
+3. \textbf{EfficientNetV2}:  
+EfficientNetV2 is a more advanced and complex evolution of the original EfficientNet-B0. While both models are based on compound scaling, EfficientNetV2 introduces deeper and wider architectures with significantly more layers and parameters, allowing it to capture richer and more detailed features.
+
+Compared to EfficientNet-B0, it includes:
+\begin{itemize}
+    \item \textbf{More convolutional layers}: Increasing network depth improves its ability to model complex patterns in data.
+    \item \textbf{Fused MBConv blocks}: A modified version of MBConv that simplifies early layers and improves training speed, while adding structural complexity.
+    \item \textbf{Higher capacity}: More channels and larger hidden dimensions make the model more expressive, at the cost of greater computational load.
+\end{itemize}
+
+This added complexity makes EfficientNetV2 more powerful, but also more resource-intensive, making it suitable for tasks where higher accuracy justifies the increased model size.
+
+\subsection{Classification Head}
+Two distinct classification head architectures were implemented and evaluated to optimize performance for bird call classification: a traditional Multi-Layer Perceptron (MLP) approach and a Sound Event Detection (SED) framework.
+
+\textbf{Multi-Layer Perceptron Classification Head}
+The MLP approach employs a straightforward deep classification architecture built on top of the EfficientNet backbone:
+
+\begin{itemize}
+    \item \textbf{Input layer}: Receives 1280-dimensional feature vectors from EfficientNet-B0 global average pooling
+    \item \textbf{Dropout layer}: 40\% dropout rate for initial regularization
+    \item \textbf{Hidden layer}: Linear transformation to 512 neurons with ReLU activation
+    \item \textbf{Batch normalization}: Applied to 512-dimensional features for training stability
+    \item \textbf{Secondary dropout}: 30\% dropout rate for additional regularization
+    \item \textbf{Output layer}: Linear transformation to 206 neurons (one per species) with sigmoid activation for multi-label classification
+\end{itemize}
+
+This architecture provides a direct mapping from global audio features to species probabilities, offering computational efficiency and interpretable outputs suitable for clip-level classification tasks.
+
+\textbf{Sound Event Detection (SED) Classification Head}
+The SED approach implements a sophisticated temporal attention mechanism designed to capture both clip-level and frame-level audio patterns:
+
+\textbf{Architecture Components:}
+\begin{itemize}
+    \item \textbf{Temporal feature processing}: EfficientNet features averaged across frequency dimension, preserving temporal structure
+    \item \textbf{Channel smoothing}: Combination of max-pooling and average-pooling (kernel size 3) for noise reduction
+    \item \textbf{Temporal MLP}: Linear transformation (1280 → 1280) with ReLU activation and 50\% dropout
+\end{itemize}
+
+\textbf{Attention Block (AttBlockV2):}
+The core innovation lies in the dual-branch attention mechanism:
+\begin{itemize}
+    \item \textbf{Attention branch}: Generates normalized attention weights via $\text{softmax}(\tanh(\text{Conv1D}(x)))$
+    \item \textbf{Classification branch}: Produces frame-level predictions through Conv1D with sigmoid activation
+    \item \textbf{Weighted aggregation}: Combines outputs as $\sum(\text{attention} \times \text{classification})$
+\end{itemize}
+
+\textbf{Multi-scale Output Generation:}
+\begin{itemize}
+    \item \textbf{Clipwise output}: Attention-weighted aggregation for single clip prediction
+    \item \textbf{Framewise output}: Temporal interpolation (30:1 ratio) providing fine-grained localization
+    \item \textbf{Segmentwise output}: Intermediate temporal resolution for segment-level analysis
+\end{itemize}
+
+\textbf{Theoretical Advantages:}
+Unlike the MLP approach, SED maintains temporal structure throughout processing, enabling:
+\begin{itemize}
+    \item \textbf{Temporal localization}: Precise identification of when bird calls occur within clips
+    \item \textbf{Attention-based aggregation}: Intelligent weighting of temporal segments based on acoustic relevance
+    \item \textbf{Multi-resolution analysis}: Simultaneous processing at multiple temporal scales
+    \item \textbf{Robust handling of complex soundscapes}: Distinction between target vocalizations and background noise
+\end{itemize}
+
+This temporal awareness is crucial for the BirdCLEF evaluation format, which requires predictions for 5-second segments within 60-second soundscapes. The SED architecture naturally handles the competition's segmentation requirements while providing interpretable attention patterns that indicate when and where bird calls occur.
+
+\subsection{Training Configuration}
+Several combinations of training hyperparameters were tested to identify the most effective setup. The configuration that yielded the best results is reported below:
+
+\begin{itemize}
+    \item \textbf{Optimizer}: AdamW, with a base learning rate of $4 \times 10^{-4}$ for the backbone and $8 \times 10^{-4}$ for the classification head
+    \item \textbf{Learning rate scheduler}: CosineAnnealingLR, $T_{max} = 30$ epochs, $\eta_{min} = 1 \times 10^{-6}$
+    \item \textbf{Batch size}: 96
+    \item \textbf{Loss function}: Binary Cross-Entropy with Logits (BCEWithLogitsLoss), suitable for multi-label classification
+    \item \textbf{Training epochs}: 30, with early stopping (patience = 5 epochs without improvement)
+    \item \textbf{Train/validation split}: 80\%/20\%, stratified by class, excluding classes with fewer than 3 samples from the validation set
+\end{itemize}
+
+This configuration was selected after extensive experimentation, balancing convergence speed, generalization, and computational efficiency.
+
+\section{Experimental Results}
+\subsection{Evaluation Metrics}
+Model performance was evaluated using a two-step approach, reflecting both the competition requirements and standard machine learning practices.
+
+\textbf{1. Local Validation:}
+During model development, performance was assessed on a held-out validation set, created via stratified splitting of the training data (excluding classes with fewer than 3 examples from validation). The following metrics were computed:
+\begin{itemize}
+    \item Macro-averaged precision, recall, and F1-score
+    \item Per-class performance analysis, with particular attention to rare and common classes
+    \item Confusion matrix visualization
+\end{itemize}
+Metrics were calculated using thresholded sigmoid outputs (multi-label setting), and additional analyses were performed to compare results across class frequency categories (rare, normal, common).
+
+\textbf{2. Official Competition Evaluation:}
+The final evaluation was performed on a hidden test set provided by the BirdCLEF competition organizers. For submission, the model generated probability predictions for each 5-second segment of the 60-second test soundscapes, covering all 206 species. The official leaderboard scores were based on macro-averaged F1-score computed on this secret test set, ensuring fair comparison between participants.
+
+All reported results in this document refer to the best configuration found locally, while the final ranking and test performance were determined by the competition's automated evaluation system on the secret
+
+\subsection{Post-processing of Predictions for Submission}
+To maximize performance in the official Kaggle evaluation, advanced post-processing techniques were implemented on the model predictions, as documented in the inference notebooks. The main strategies adopted are:
+
+\begin{itemize}
+    \item \textbf{Centered segmentation with strategic padding}: Each test soundscape is divided into 5-second segments, applying padding at the beginning and end of the audio signal to properly center the first and last segments, reducing the risk of information loss at the edges.
+    \item \textbf{Test-Time Augmentation (Delta Shift TTA)}: For each segment, multiple predictions are generated by applying small temporal shifts (±25ms, ±50ms) to the audio signal. The resulting predictions are then averaged, increasing robustness to temporal variations and noise.
+    \item \textbf{Advanced temporal smoothing}: Predictions for each segment are further filtered using a weighted moving average (kernel [0.1, 0.2, 0.4, 0.2, 0.1]) that combines predictions from adjacent segments, reducing local variability and improving the temporal consistency of the estimated probabilities.
+    \item \textbf{Submission integrity check}: The correspondence between the row\_id and columns of the generated submission and those required by the competition's sample file is verified, ensuring the formal correctness of the submitted file.
+\end{itemize}
+
+These post-processing techniques, applied to both standard EfficientNet and SED models, enabled more stable and reliable predictions, improving the final
+
+\subsection{Results}
+The project achieved a steady improvement in performance through a series of experimental milestones, each introducing specific optimizations. The main steps and their impact on the macro F1-score (validation or public leaderboard) are summarized below:
+
+\begin{itemize}
+    \item \textbf{v6-v7}: SimpleCNN, central segment, basic params\\
+    \textbf{F1-score: 0.581}
+    
+    \item \textbf{v10}: SimpleCNN, multi-segment (20\%, 50\%, 80\%), class balancing (30\%)\\
+    \textbf{F1-score: 0.665}
+    
+    \item \textbf{v11}: EfficientNet-B0, adaptive multi-segment dataset, batch size 96, different LR\\
+    \textbf{F1-score: 0.712}
+    
+    \item \textbf{v14}: EfficientNet, horizontal cutmix, reduced LR, CosineAnnealingLR, class balancing 40\%\\
+    \textbf{F1-score: 0.743}
+    
+    \item \textbf{v17-v18}: tuning Mel spectrogram parameters and augmentation\\
+    \textbf{F1-score: 0.741--0.740}
+    
+    \item \textbf{v20}: Optimized data augmentation, tuned training parameters\\
+    \textbf{F1-score: 0.744}
+    
+    \item \textbf{EfficientNetV2-S}: Upgrade to EfficientNetV2-S pretrained on ImageNet-21k, wider head (768 neurons)\\
+    \textbf{F1-score: 0.678}
+    
+    \item \textbf{v22}:  temporal smoothing, \texttt{N\_MELS=192}, \texttt{HOP\_LENGTH=768}, full randomization\\
+    \textbf{F1-score: 0.733}
+    
+    \item \textbf{v23 (SED)}: SED model, attention block, audio-specific augmentations, end-to-end\\
+    \textbf{F1-score: 0.73}
+    
+    \item \textbf{v24}: EfficientNet with optimized oversampling and random segments\\
+    \textbf{F1-score: 0.779 (Public) / 0.765 (Private)}
+    
+    \item \textbf{v25}: EfficientNet-B0 NS JFT, fully random segments (\texttt{p=1.0}), XY masking (\texttt{p=0.4}), horizontal cutmix (\texttt{p=0.4}), aggressive balancing (50\%, threshold=180)\\
+    \textbf{F1-score: 0.789}
+    
+    \item \textbf{v25 + Post-processing}: Advanced post-processing: temporal smoothing with kernel \texttt{[0.1, 0.2, 0.4, 0.2, 0.1]}, delta shift TTA (\texttt{±25ms}, \texttt{±50ms}), strategic padding\\
+    \textbf{F1-score: 0.796}
+\end{itemize}
+
+
+\noindent
+In summary, the final solution as implemented in \linebreak\texttt{notebook-birdclef\_AUG\_paper.ipynb} and \linebreak\texttt{inference.ipynb} combines the best-performing configuration: fully randomized 5-second segments, EfficientNet-B0-NS-JFT, with a regularized MLP head, extensive class-aware data augmentation, and advanced post-processing (padding, delta shift TTA, temporal smoothing). This pipeline achieves a macro F1-score of \textbf{0.796} on the official BirdCLEF 2025 test set, confirming the effectiveness of the adopted strategies.
+
+\section{Conclusions}
+This study demonstrates the effectiveness of convolutional neural networks for automatic bird call classification in the BirdCLEF competition context. The mel-spectrogram representation combined with data augmentation techniques proved successful for capturing species-specific acoustic patterns.
+
+Future work could explore ensemble methods to further boost classification performance, as well as more advanced pre-processing strategies aimed at removing human voices and other non-bird sounds from the dataset. Additionally, pseudo-labelling techniques could be applied to leverage the large amount of unlabeled audio data provided by the competition, which was not utilized in the current experiments. These directions may further improve the robustness and generalization of the developed system, which already shows promise for real-world applications in biodiversity
+
+\clearpage
+\onecolumn
+\section*{}
+\begin{thebibliography}{9}
+
+\bibitem{birdclef2025_competition}
+BirdCLEF 2025 Competition.
+\newblock Kaggle Competition Page.
+\newblock \url{https://www.kaggle.com/competitions/birdclef-2025}
+
+\bibitem{birdclef2025_data}
+BirdCLEF 2025 Dataset.
+\newblock Kaggle Competition Data Page.
+\newblock \url{https://www.kaggle.com/competitions/birdclef-2025/data}
+
+\bibitem{tan2020efficientnet}
+M. Tan and Q. V. Le.
+\newblock EfficientNet: Rethinking Model Scaling for Convolutional Neural Networks.
+\newblock \textit{arXiv preprint arXiv:1905.11946}, 2020.
+\newblock \url{https://arxiv.org/abs/1905.11946}
+
+\bibitem{mel_spectrogram_explained}
+A. Soni.
+\newblock Understanding the Mel Spectrogram.
+\newblock Medium, 2020.
+\newblock \url{https://medium.com/analytics-vidhya/understanding-the-mel-spectrogram-fca2afa2ce53}
+
+K. Kushwaha.
+\newblock Exploring Mel Spectrograms: A Powerful Feature Extraction Tool for Audio Signals.
+\newblock Medium, 2023.
+\newblock \url{https://medium.com/@kunalkushwahatg/exploring-mel-spectrograms-a-powerful-feature-extraction-tool-for-audio-signals-3b68ff6fcf96}
+
+\bibitem{mel_spec_impl_kadir}
+K. Candrisolu.
+\newblock Transforming Audio to Mel Spectrogram - BirdCLEF 25.
+\newblock Kaggle Notebook.
+\newblock \url{https://www.kaggle.com/code/kadircandrisolu/transforming-audio-to-mel-spec-birdclef-25}
+
+\bibitem{macisaac2024}
+J. MacIsaac, S. Newson, A. Ashton-Butt, H. Pearce, B. Milner.
+\newblock Improving acoustic species identification using data augmentation within a deep learning framework.
+\newblock \textit{Ecological Informatics}, 83, 2024, 102851.
+\newblock \url{https://doi.org/10.1016/j.ecoinf.2024.102851}
+
+\bibitem{audiomentations}
+I. Jordal.
+\newblock Audiomentations: A Python library for audio data augmentation.
+\newblock \url{https://github.com/iver56/audiomentations}
+
+\bibitem{sed_intro}
+H. Arai.
+\newblock Introduction to Sound Event Detection (SED).
+\newblock Kaggle Notebook.
+\newblock \url{https://www.kaggle.com/code/hidehisaarai1213/introduction-to-sound-event-detection}
+
+\bibitem{birdclef2025_1st_place}
+BirdCLEF 2025 - 1st Place Solution.
+\newblock Kaggle Competition Discussion.
+\newblock \url{https://www.kaggle.com/competitions/birdclef-2025/discussion/583577}
+
+\bibitem{birdclef2024_1st_place}
+BirdCLEF 2024 - 1st Place Solution.
+\newblock Kaggle Competition Discussion.
+\newblock \url{https://www.kaggle.com/competitions/birdclef-2024/discussion/512197}
+
+\bibitem{efficientnetb0_sed}
+H. Arai.
+\newblock EfficientNetB0 with Sound Event Detection (SED) for BirdCLEF.
+\newblock Kaggle 6th Place Solution, 2021.
+\newblock \url{https://github.com/koukyo1994/kaggle-birdcall-6th-place/tree/master}
+\newblock \url{https://www.kaggle.com/competitions/birdsong-recognition/discussion/183204}
+
+\bibitem{bird25_examples}
+Bird25 OpenVino Ensemble Inference Baseline (LB 0.874).
+\newblock Kaggle Competition Notebook.
+\newblock \url{https://www.kaggle.com/code/kurisew/bird25-openvino-ensemble-infer-baseline-lb-874/notebook}
+
+\bibitem{birdclef2025_2nd_place}
+\newblock Kaggle Competition Discussion.
+\newblock \url{https://www.kaggle.com/competitions/birdclef-2025/discussion/583699}
+
+\bibitem{birdclef2023_techniques}
+BirdClef 2023 - Advanced Techniques and Methodologies.
+\newblock Kaggle Competition Discussion.
+\newblock \url{http://kaggle.com/competitions/birdclef-2023/discussion/412808}
+
+\end{thebibliography}
+
+\twocolumn
+
+\end{document}

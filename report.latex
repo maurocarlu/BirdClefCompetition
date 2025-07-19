@@ -222,185 +222,325 @@ class EfficientNetBirdClassifier(nn.Module):
         return output
 \end{lstlisting}
 
-\section{Tecniche di miglioramento}
-
-\subsection{Strategie di estrazione dei segmenti audio}
-Durante il progetto abbiamo sperimentato diverse strategie per l'estrazione dei segmenti audio:
-
-\subsubsection{Segmento centrale fisso (Esperimento 1)}
-Nella prima fase, abbiamo estratto solo il segmento centrale di 5 secondi da ogni registrazione. Questo approccio semplice ha fornito risultati discreti, ma non sfruttava completamente le informazioni contenute nelle registrazioni più lunghe.
-
-\subsubsection{Segmenti multipli fissi: 20\%, 50\%, 80\% (Esperimento 2)}
-Abbiamo successivamente implementato l'estrazione di tre segmenti fissi da ogni registrazione, posizionati al 20\%, 50\% e 80\% della durata totale. Questo ha aumentato la quantità di dati disponibili per il training e ha migliorato la robustezza del modello.
-
-\subsubsection{Dataset adattivo multi-segmento (Esperimento 3+)}
-Infine, abbiamo sviluppato un approccio adattivo che estrae un numero variabile di segmenti in base alla lunghezza della registrazione:
+\subsection{PASST (Patchout Audio Spectrogram Transformer)}
+Come ulteriore approccio innovativo, abbiamo implementato un modello basato su PASST (Patchout Audio Spectrogram Transformer), un'architettura che applica il paradigma dei transformer agli spettrogrammi audio. A differenza delle CNN utilizzate negli esperimenti precedenti, PASST adotta un approccio basato sull'attenzione:
 
 \begin{itemize}
-    \item \textbf{Clip corte} (<7.5s): solo segmento centrale
-    \item \textbf{Clip medie} (<12.5s): segmenti iniziale (20\%) e finale (80\%)
-    \item \textbf{Clip lunghe} (≥12.5s): segmenti iniziale (20\%), centrale (50\%) e finale (80\%)
+    \item \textbf{Architettura transformer}: Tratta gli spettrogrammi audio come sequenze di patch
+    \item \textbf{Patch embedding}: Conversione degli spettrogrammi in embedding mediante convoluzioni
+    \item \textbf{Self-attention}: Cattura dipendenze a lungo raggio nel dominio tempo-frequenza
+    \item \textbf{Token CLS}: Utilizzato per la classificazione, come nei modelli BERT/ViT
+    \item \textbf{Embedding posizionali}: Forniscono informazioni sulla posizione relativa delle patch
 \end{itemize}
 
-Questo approccio ha permesso di espandere efficacemente il dataset di training di circa 2.3 volte, migliorando la robustezza del modello.
+L'idea principale è che i pattern acustici delle vocalizzazioni animali possono beneficiare dell'attenzione globale dei transformer, catturando meglio le relazioni tempo-frequenza rispetto alle CNN tradizionali.
 
-\begin{lstlisting}[language=Python, caption=Implementazione dell'estrazione segmenti adattiva]
-# Determina quali segmenti usare in base alla durata
-if total_duration < config.DURATION * 1.5:
-    # Clip troppo corta per multiple segmenti, usa solo il centro
-    segments = ['center']
-elif total_duration < config.DURATION * 2.5:
-    # Clip media, usa inizio e fine
-    segments = ['start', 'end']
-else:
-    # Clip abbastanza lunga, usa tutti e tre i segmenti
-    segments = ['start', 'center', 'end']
-\end{lstlisting}
-
-\subsection{Data augmentation audio}
-Abbiamo implementato diverse tecniche di data augmentation specifiche per audio:
-
-\begin{itemize}
-    \item \textbf{Random segment selection}: Selezione casuale di segmenti con probabilità configurabile (p=0.5). Questa tecnica è stata particolarmente efficace per aumentare la variabilità degli esempi di training.
-    
-    \item \textbf{XY masking}: Mascheramento casuale di porzioni dello spettrogramma sia sull'asse temporale (10-20\% della larghezza) che frequenziale (10-20\% dell'altezza). Questa tecnica migliora la robustezza del modello a frequenze o parti temporali mancanti.
-    
-    \item \textbf{Horizontal cutmix}: Miscelazione di segmenti orizzontali tra spettrogrammi diversi, con conseguente mix delle etichette proporzionale alla porzione mixata. Abbiamo applicato questa tecnica con probabilità 0.25 per ogni esempio nel batch.
-\end{itemize}
-
-\begin{lstlisting}[language=Python, caption=Implementazione di horizontal cutmix]
-def horizontal_cutmix_collate(batch, p_cutmix=0.25):
-    inputs = torch.stack([x[0] for x in batch])
-    targets = torch.stack([x[1] for x in batch])
-    batch_size = len(inputs)
-    
-    if batch_size > 1:
-        for i in range(batch_size):
-            if np.random.rand() < p_cutmix:
-                j = np.random.randint(0, batch_size)
-                if i != j:
-                    width = inputs.shape[3]
-                    cut_point = np.random.randint(int(width * 0.25), int(width * 0.75))
-                    mix_ratio = cut_point / width
-                    inputs[i, :, :, :cut_point] = inputs[j, :, :, :cut_point]
-                    targets[i] = targets[i] * (1 - mix_ratio) + targets[j] * mix_ratio
-    
-    return inputs, targets
-\end{lstlisting}
-
-\subsection{Bilanciamento strategico del dataset}
-Per gestire lo sbilanciamento delle classi, abbiamo implementato una strategia di bilanciamento che:
-
-\begin{itemize}
-    \item Identifica le classi abbondanti (>150 esempi nei primi esperimenti, poi ottimizzato a >200)
-    \item Rimuove selettivamente il 30\% degli esempi con rating di qualità basso (1-3) da queste classi (aumentato al 40\% nei test successivi)
-    \item Mantiene tutti gli esempi delle classi rare per massimizzare l'apprendimento
-\end{itemize}
-
-Questo approccio ha permesso di ridurre lo sbilanciamento senza perdere informazioni critiche sulle classi rare, migliorando significativamente le prestazioni complessive del sistema.
-
-\subsection{Ottimizzazione dell'addestramento}
-
-\subsubsection{Learning rates differenziati}
-Per ottimizzare il processo di transfer learning con EfficientNet:
-
-\begin{itemize}
-    \item \textbf{Esperimento 3}: 
-        \begin{itemize}
-            \item Backbone pre-addestrato: lr\_base = 1e-3
-            \item Classificatore finale: lr\_head = 3e-3
-        \end{itemize}
+\begin{lstlisting}[language=Python, caption=Implementazione core di PASST]
+class PASSTransformer(nn.Module):
+    def __init__(self, img_size=(128, 320), patch_size=16, in_channels=1, 
+                 n_classes=config.N_CLASSES, embed_dim=768, depth=12, 
+                 n_heads=12, mlp_ratio=4., qkv_bias=True, drop_rate=0.1):
+        super().__init__()
+        self.n_classes = n_classes
         
-    \item \textbf{Esperimenti 4+}: 
+        # Patch embedding
+        self.patch_embed = PatchEmbed(
+            img_size=img_size,
+            patch_size=patch_size,
+            in_channels=in_channels,
+            embed_dim=embed_dim
+        )
+        
+        # Numero di token
+        self.n_patches = self.patch_embed.n_patches
+        
+        # Posizione dei token+CLS
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.n_patches + 1, embed_dim))
+        
+        # Blocchi transformer
+        self.blocks = nn.ModuleList([
+            Block(
+                dim=embed_dim, n_heads=n_heads, mlp_ratio=mlp_ratio,
+                qkv_bias=qkv_bias, drop=drop_rate
+            )
+            for _ in range(depth)
+        ])
+        
+        # Head di classificazione
+        self.head = nn.Sequential(
+            nn.LayerNorm(embed_dim),
+            nn.Linear(embed_dim, n_classes)
+        )
+\end{lstlisting}
+
+L'implementazione si ispira all'architettura originale descritta dagli autori e disponibile su Hugging Face (\url{https://huggingface.co/docs/transformers/model_doc/audio-spectrogram-transformer}). Abbiamo adattato il modello al nostro task specifico, mantenendo i principi chiave dell'architettura originale.
+
+\section{Esperimento 7: Transformer con PASST}
+\begin{itemize}
+    \item \textbf{Architettura}: PASST con 12 layer transformer, 12 teste di attenzione, embedding dimension 768
+    \item \textbf{Preprocessing}: Stesso approccio multi-segmento adattivo degli esperimenti precedenti
+    \item \textbf{Patch size}: 16×16 per gli spettrogrammi Mel
+    \item \textbf{Parametri}: 
         \begin{itemize}
-            \item Backbone pre-addestrato: lr\_base = 5e-4 (ridotto per un fine-tuning più delicato)
-            \item Classificatore finale: lr\_head = 1e-3 (ridotto proporzionalmente)
-            \item Ottimizzatore: AdamW con weight decay 3e-4
+            \item Learning rate: 1e-4 con AdamW optimizer
+            \item Scheduler: Cosine annealing con 10\% warmup steps
+            \item Dropout: 0.1 nei layer transformer
+            \item Batch size: 64 (ridotto rispetto a EfficientNet per gestire la maggiore complessità del modello)
         \end{itemize}
+    \item \textbf{Augmentation}: Stesse tecniche dell'esperimento 6 (XY masking, cutmix)
+    \item \textbf{Bilanciamento}: Stessa strategia di rimozione selettiva (40\% degli esempi a basso rating)
+    \item \textbf{Motivazione}: Testare se i transformer possono catturare pattern temporali e spettrali complessi meglio delle CNN per le vocalizzazioni animali
+    \item \textbf{Risultato}: F1-score = 0.672
 \end{itemize}
 
-\subsubsection{Scheduler per il learning rate}
-Abbiamo sperimentato diverse strategie di scheduling:
+Questo esperimento rappresenta un approccio fondamentalmente diverso rispetto alle CNN e ai modelli convenzionali, sfruttando i recenti avanzamenti nell'applicazione dei transformer al dominio audio. I risultati permetteranno di valutare se l'attenzione globale offre vantaggi rispetto all'elaborazione convoluzionale locale per il riconoscimento di specie animali.
 
-\begin{itemize}
-    \item \textbf{Esperimenti 1-3}: ReduceLROnPlateau, che riduce il learning rate quando la validation loss smette di migliorare
-    \item \textbf{Esperimenti 4+}: CosineAnnealingLR, che riduce gradualmente il learning rate seguendo una curva cosinusoidale, con eta\_min=1e-6
-\end{itemize}
-
-\subsubsection{Early stopping e checkpoint}
-Abbiamo implementato:
-\begin{itemize}
-    \item Early stopping con una patience di 3 epoche
-    \item Salvataggio del miglior modello basato sulla validation loss
-    \item Checkpoint per riprendere l'addestramento in caso di interruzioni
-\end{itemize}
-
-\subsection{Dimensioni del batch}
-Nel corso degli esperimenti, abbiamo progressivamente aumentato la dimensione del batch:
-\begin{itemize}
-    \item \textbf{Esperimenti 1-2}: Batch size = 32
-    \item \textbf{Esperimenti 3+}: Batch size = 96
-\end{itemize}
-
-L'aumento della dimensione del batch ha permesso un addestramento più stabile e una convergenza più rapida, soprattutto con l'architettura EfficientNet.
-
-\section{Evoluzione degli esperimenti e risultati}
-
-\subsection{Esperimento 1: SimpleCNN con segmento centrale (v6-v7)}
-\begin{itemize}
-    \item \textbf{Approccio}: Utilizzo di un solo segmento centrale da ciascuna registrazione
-    \item \textbf{Architettura}: CNN semplice con 3 blocchi convoluzionali
-    \item \textbf{Parametri}: Learning rate = 1e-3, Batch size = 32, Dropout = 0.5
-    \item \textbf{Risultato}: F1-score = 0.581, validation loss intorno a 0.05
-    \item \textbf{Limitazioni}: Performance scarse su classi rare, overfitting dopo poche epoche
-\end{itemize}
-
-\subsection{Esperimento 2: SimpleCNN con multi-segmento fisso (v10)}
-\begin{itemize}
-    \item \textbf{Miglioramento}: Implementazione dell'estrazione dei segmenti al 20\%, 50\% e 80\%
-    \item \textbf{Architettura}: CNN semplice invariata
-    \item \textbf{Bilanciamento}: Rimozione del 30\% degli esempi a basso rating dalle classi con >200 esempi
-    \item \textbf{Risultato}: F1-score = 0.665 (+14.5\% rispetto all'esperimento 1)
-    \item \textbf{Osservazione}: Riduzione dell'overfitting grazie all'aumento di dati disponibili
-\end{itemize}
-
-\subsection{Esperimento 3: EfficientNet con dataset adattivo (v11)}
+\subsection{Esperimento 8: EfficientNetV2-S e aumento della capacità del modello}
 \begin{itemize}
     \item \textbf{Miglioramenti}: 
         \begin{itemize}
-            \item Passaggio a EfficientNet-B0 pre-addestrato
-            \item Dataset adattivo multi-segmento
-            \item Learning rates differenziati (1e-3 per backbone, 3e-3 per classificatore)
+            \item Passaggio da EfficientNet-B0 a EfficientNetV2-S pre-addestrato su ImageNet-21k
+            \item Ampliamento della testa del classificatore (768 neuroni vs 512)
+            \item Utilizzo di pesi pre-addestrati più avanzati (in21k_ft_in1k)
         \end{itemize}
-    \item \textbf{Augmentation}: Primi test con XY masking e random segments
-    \item \textbf{Parametri}: Batch size aumentato a 96
-    \item \textbf{Risultato}: F1-score = 0.712 (+7.1\% rispetto all'esperimento 2)
-    \item \textbf{Note}: Significativo miglioramento di generalizzazione
+    \item \textbf{Preprocessing}: Stesso approccio multi-segmento adattivo degli esperimenti precedenti
+    \item \textbf{Augmentation}: Stesse tecniche dell'esperimento 6 (random segment, XY masking, cutmix)
+    \item \textbf{Interruzione}: Training interrotto all'epoca 7 per overfitting (aumento della validation loss)
+    \item \textbf{Risultato}: F1-score = 0.678
+    \item \textbf{Note}: Il modello ha iniziato a mostrare segni di overfitting dopo l'epoca 4,
+          suggerendo la necessità di una maggiore regolarizzazione per modelli più potenti
 \end{itemize}
 
-\subsection{Esperimento 4: EfficientNet con cutmix e ottimizzazione (v13-v14)}
+\subsection{Esperimento 9: EfficientNetV2-S con regolarizzazione ottimizzata}
 \begin{itemize}
-    \item \textbf{Miglioramenti}:
+    \item \textbf{Miglioramenti}: 
         \begin{itemize}
-            \item Aggiunta di horizontal cutmix (p=0.25)
-            \item Riduzione dei learning rate (5e-4 per backbone, 1e-3 per classificatore)
-            \item Passaggio a CosineAnnealingLR
+            \item Aumento della regolarizzazione (dropout incrementato a 0.4 e 0.3)
+            \item Parametri dello spettrogramma ottimizzati (n_fft=2048, hop_length=1024)
+            \item Riutilizzo dell'architettura EfficientNetV2-S con head a 768 neuroni
         \end{itemize}
-    \item \textbf{Bilanciamento}: Rimozione del 40\% degli esempi con rating bassi dalle classi con >150 esempi
-    \item \textbf{Risultato}: Inizialmente F1-score = 0.464 (v13, a causa di un bug), poi corretto a 0.743 (v14)
-    \item \textbf{Note}: Miglior risultato ottenuto in tutti gli esperimenti
+    \item \textbf{Motivazione}: Contrastare l'overfitting osservato nell'esperimento 8, migliorando la rappresentazione spettrale
+    \item \textbf{Preprocessing}: Mantenuto l'approccio multi-segmento adattivo con le configurazioni aggiornate
+    \item \textbf{Augmentation}: Stesse tecniche precedenti (random segment, XY masking, cutmix)
+    \item \textbf{Risultato}: F1-score = 0.618
+    \item \textbf{Note}: Nonostante l'aumento della regolarizzazione, le performance sono state significativamente inferiori rispetto alla configurazione ottimale con EfficientNetB0 (0.744)
 \end{itemize}
 
-\subsection{Esperimento 5: Ottimizzazione parametri e fine-tuning (v17-v18)}
+\subsection{Esperimento 10: Ottimizzazione del preprocessing con PyTorch/torchaudio}
 \begin{itemize}
-    \item \textbf{Ottimizzazioni}: 
+    \item \textbf{Miglioramenti}: 
         \begin{itemize}
-            \item Fine-tuning dei parametri del Mel spettrogramma
-            \item Modifiche minori alla strategia di augmentation
-            \item Regolazione dei parametri del dropout (0.3 e 0.2)
+            \item Passaggio completo da librosa a PyTorch/torchaudio per il preprocessing audio
+            \item Ottimizzazione dei parametri dello spettrogramma Mel (hop\_length=512, fmin=50Hz, fmax=14000Hz)
+            \item Creazione di un'istanza singola di MelSpectrogram per migliorare l'efficienza
+            \item Normalizzazione ottimizzata in scala dB con clipping a 1e-10
         \end{itemize}
-    \item \textbf{Risultati}: F1-score = 0.741 (v17) e 0.740 (v18)
-    \item \textbf{Note}: Leggero calo rispetto alla v14, probabilmente dovuto alla variabilità intrinseca dell'addestramento
+    \item \textbf{Architettura}: EfficientNet-B0 (mantenuta l'architettura dell'esperimento 6)
+    \item \textbf{Motivazione}: Migliorare le performance computazionali e la coerenza del pipeline di processing
+    \item \textbf{Preprocessing}: 
+        \begin{itemize}
+            \item Elaborazione su GPU quando disponibile
+            \item Gestione robusta degli errori di caricamento audio
+            \item Riutilizzo dell'approccio multi-segmento adattivo
+        \end{itemize}
+    \item \textbf{Augmentation}: Stesse tecniche dell'esperimento 6 (random segment, XY masking, cutmix)
+    \item \textbf{Risultato}: F1-score = 0.749s
+    \item \textbf{Note}: L'ottimizzazione del preprocessing migliora la velocità di addestramento e riduce la variabilità tra esecuzioni successive
+\end{itemize}
+
+\subsection{Esperimento 11: Randomizzazione totale, nuova normalizzazione e temporal smoothing}
+\begin{itemize}
+    \item \textbf{Miglioramenti}: 
+        \begin{itemize}
+            \item Sostituzione della normalizzazione min-max con Z-score (standardizzazione)
+            \item Implementazione del temporal smoothing post-predizione per migliorare coerenza tra segmenti adiacenti
+            \item Ottimizzazione dei parametri Mel spectrogram: N\_MELS aumentato a 192, HOP\_LENGTH modificato a 768
+            \item Randomizzazione completa dei segmenti sia in training che validation
+        \end{itemize}
+    \item \textbf{Normalizzazione}:
+        \begin{itemize}
+            \item Formula: spectrogram\_std = \frac{spectrogram - mean}{std + \epsilon} con \epsilon = 1e-6
+            \item Gestione robusta del caso std=0 (sottrazione della sola media)
+            \item Maggiore robustezza a variazioni di volume e condizioni di registrazione
+        \end{itemize}
+    \item \textbf{Temporal smoothing}: 
+        \begin{itemize}
+            \item Per segmenti interni: $pred_i = 0.1 \times pred_{i-1} + 0.8 \times pred_i + 0.1 \times pred_{i+1}$
+            \item Per primo segmento: $pred_0 = 0.9 \times pred_0 + 0.1 \times pred_1$
+            \item Per ultimo segmento: $pred_n = 0.9 \times pred_n + 0.1 \times pred_{n-1}$
+        \end{itemize}
+    \item \textbf{Motivazione}: Allinearsi ai parametri e metodologie dei top performer della competizione, migliorando la robustezza delle predizioni attraverso normalizzazione più efficace e coerenza temporale
+    \item \textbf{Architettura}: EfficientNet-B0 con stessa configurazione dell'esperimento 10
+    \item \textbf{Risultato}: F1-score = 0.733
+    \item \textbf{Note}: Nonostante le ottimizzazioni teoriche (Z-score e temporal smoothing), le performance sono risultate inferiori rispetto all'esperimento 10 (-1.6\%). Questo suggerisce che:
+        \begin{itemize}
+            \item La normalizzazione min-max potrebbe essere più appropriata per questo specifico dataset
+            \item Il temporal smoothing potrebbe aver ridotto la discriminabilità delle predizioni
+            \item I parametri del Mel spectrogram precedenti (N\_MELS=128, HOP\_LENGTH=512) erano già ottimali
+            \item La variabilità intrinseca dell'addestramento potrebbe aver influenzato il risultato
+        \end{itemize}
+\end{itemize}
+
+\subsection{Esperimento 12: Implementazione delle Ottimizzazioni dei Vincitori}
+\begin{itemize}
+    \item \textbf{Miglioramenti architetturali}: 
+        \begin{itemize}
+            \item Implementazione di \textbf{WeightedFocalBCELoss} al posto della semplice BCEWithLogitsLoss
+            \item Parametri ottimizzati: $\gamma=2$, $\alpha_{rare}=3.0$, $\alpha_{common}=0.5$
+            \item Bilanciamento automatico delle classi basato sulla frequenza inversa
+            \item Pesi differenziati: classi rare (<1\% dataset) → peso 3x, classi comuni (>5\%) → peso 0.5x
+        \end{itemize}
+    
+    \item \textbf{Parametri Mel Spectrogram ottimizzati}:
+        \begin{itemize}
+            \item \textbf{Sample rate}: 32000 Hz (invariato)
+            \item \textbf{Durata}: 5 secondi (invariato) 
+            \item \textbf{N\_MELS}: 128 (mantenuto ottimale, evita overfitting)
+            \item \textbf{N\_FFT}: 1024 (buona risoluzione frequenziale)
+            \item \textbf{HOP\_LENGTH}: 512 (equilibrio ottimale risoluzione-velocità)
+            \item \textbf{FMIN}: 20 Hz (range frequenziale ottimizzato)
+            \item \textbf{FMAX}: 16000 Hz (copertura completa range utile)
+            \item \textbf{Normalizzazione}: Conversion to dB + min-max normalization (più stabile di Z-score)
+        \end{itemize}
+    
+    \item \textbf{Data Augmentation avanzata}:
+        \begin{itemize}
+            \item \textbf{Random Segment Selection}: Sempre attivo (100\% probabilità)
+            \item \textbf{Random Erasing}: Nuova tecnica che rimuove rettangoli casuali (30\% probabilità)
+            \item \textbf{Time/Frequency Masking}: Mascheramento separato e più aggressivo (50\% probabilità ciascuno)
+            \item \textbf{Mixup sempre attivo}: Probabilità 100\% con 25\% CutMix alternato
+            \item \textbf{Sequenza ottimizzata}: XY masking leggero (10\%) + Image augmentations (Random Erasing 30\% + Time/Freq masking 50\%)
+        \end{itemize}
+    
+    \item \textbf{Ottimizzazioni aggiuntive}:
+        \begin{itemize}
+            \item \textbf{Batch size}: 96 (ottimizzato per stabilità training)
+            \item \textbf{Learning rate}: 5e-4 (backbone) e 1e-3 (classificatore) - validati empiricamente
+            \item \textbf{Bilanciamento dataset}: abundant\_class\_threshold=150, remove\_percentage=0.4
+            \item \textbf{Preprocessing unificato}: Pipeline PyTorch/torchaudio con lazy loading
+            \item \textbf{Temporal smoothing}: Applicato in post-processing per coerenza predizioni
+        \end{itemize}
+    
+    \item \textbf{Motivazione parametri Mel}:
+        \begin{itemize}
+            \item \textbf{HOP\_LENGTH=512}: Testato empiricamente come ottimale - più basso (64) rallenta senza benefici
+            \item \textbf{N\_MELS=128}: Dimensione standard che evita overfitting mantenendo dettaglio sufficiente
+            \item \textbf{Normalizzazione min-max}: Più stabile di Z-score per questo dataset specifico
+            \item \textbf{Range 20-16000 Hz}: Copre completamente le frequenze utili per vocalizzazioni animali
+        \end{itemize}
+    
+    \item \textbf{Risultato atteso}: 
+        \begin{itemize}
+            \item Target: F1-score > 0.75 grazie alla WeightedFocalBCELoss e augmentations ottimizzate
+            \item Miglioramento specifico su classi rare attraverso pesatura automatica
+            \item Maggiore stabilità e velocità di training con parametri Mel validati
+        \end{itemize}
+\end{itemize}
+
+\subsection{Esperimento 13: Implementazione Modello SED dei Vincitori}
+\begin{itemize}
+    \item \textbf{Architettura rivoluzionaria}: 
+        \begin{itemize}
+            \item Passaggio da CNN tradizionale a modello \textbf{Sound Event Detection (SED)}
+            \item Backbone: EfficientNet-B0 con encoder personalizzato
+            \item \textbf{Attention Block V2}: Meccanismo di attenzione specifico per audio
+            \item Processing end-to-end: da audio raw a predizioni senza preprocessing esterno
+        \end{itemize}
+    
+    \item \textbf{Pipeline preprocessing integrata}:
+        \begin{itemize}
+            \item Trasformazione Mel Spectrogram direttamente nel modello
+            \item Parametri ottimizzati: mel\_scale="htk", norm="slaney" (standard SED)
+            \item Normalizzazione: (spec + 80) / 80 come nei modelli dei vincitori
+            \item BatchNorm2d applicato agli spettrogrammi prima dell'encoder
+        \end{itemize}
+    
+    \item \textbf{Augmentations SED dei vincitori}:
+        \begin{itemize}
+            \item \textbf{Mixup audio}: Mixup applicato direttamente sull'audio raw (p=0.5)
+            \item \textbf{Background Noise}: Simula rumore ambientale Zenodo nocall (p=0.3)
+            \item \textbf{Random Filtering}: High-pass, low-pass, band-pass casuali (p=0.4)
+            \item \textbf{SpecAugment}: Frequency/Time masking negli spettrogrammi (p=0.3)
+            \item Sequenza: Audio augs → Mel transform → SpecAugment nel modello
+        \end{itemize}
+    
+    \item \textbf{Gestione etichette Mixup}:
+        \begin{itemize}
+            \item Mix automatico delle etichette proporzionale al peso lambda
+            \item Gestione robusta degli errori di caricamento audio
+            \item Fallback a augmentations senza mixup in caso di problemi
+        \end{itemize}
+    
+    \item \textbf{Ottimizzazioni architetturali}:
+        \begin{itemize}
+            \item Global Average Pooling + Channel Smoothing (max + avg pooling)
+            \item Dropout 0.5 sui layer fully connected
+            \item FC1 layer intermedio per feature refinement
+            \item Attention-based classification finale
+        \end{itemize}
+    
+    \item \textbf{Parametri di training}:
+        \begin{itemize}
+            \item Dataset: Stesso bilanciamento (abundant\_threshold=150, remove=40\%)
+            \item Loss: WeightedFocalBCELoss ottimizzata (gamma=1.5, alpha\_rare=2.0)
+            \item Optimizer: AdamW con learning rates differenziati
+            \item Scheduler: CosineAnnealingLR (T\_max=15, eta\_min=1e-7)
+            \item Batch size: 64 (ridotto per complessità SED)
+        \end{itemize}
+    
+    \item \textbf{Innovazioni chiave}:
+        \begin{itemize}
+            \item Architettura completamente allineata ai vincitori BirdClef 2025
+            \item Processing audio end-to-end senza pipeline esterne
+            \item Augmentations specifiche per SED (non generiche per immagini)
+            \item Gestione automatica GPU/CPU per le trasformazioni
+        \end{itemize}
+    
+    \item \textbf{Risultato atteso}: 
+        \begin{itemize}
+            \item  F1-score = 0.73 grazie all'architettura SED ottimizzata
+            \item Miglioramento significativo su classi rare con augmentations audio
+            \item Maggiore robustezza grazie al processing end-to-end
+        \end{itemize}
+\end{itemize}
+\subsection{Esperimento v14: EfficientNet con Oversampling ottimizzato e segmenti randomici}
+\begin{itemize}
+    \item \textbf{Architettura}: 
+        \begin{itemize}
+            \item EfficientNet-B0 con la stessa testa MLP degli esperimenti precedenti
+            \item Dropout incrementato a 0.4 nel primo layer e 0.3 nel secondo
+            \item Weight decay aumentato a 5e-4 per migliorare la regolarizzazione
+        \end{itemize}
+    
+    \item \textbf{Parametri Mel Spettrogramma ottimizzati}:
+        \begin{itemize}
+            \item Hop length: 512 (configurazione ottimale)
+            \item N\_MELS: 224 (aumentato per catturare più dettaglio frequenziale)
+            \item Normalizzazione min-max con clipping sui valori estremi
+        \end{itemize}
+    
+    \item \textbf{Strategie di campionamento e augmentation}:
+        \begin{itemize}
+            \item \textbf{Segmenti randomici}: Estrazione di segmenti completamente casuali dalle registrazioni audio
+            \item \textbf{Oversampling delle classi rare}: Soglia ridotta da 150 a 100 esempi per le classi abbondanti
+            \item \textbf{Stratified split}: Divisione train/validation stratificata per garantire rappresentazione di tutte le classi
+            \item Aumento della probabilità di XY masking (0.7) e horizontal cutmix (0.4)
+        \end{itemize}
+    
+    \item \textbf{Ottimizzazioni addizionali}:
+        \begin{itemize}
+            \item \textbf{Gradient clipping}: Limite max\_norm=1.0 per stabilizzare l'addestramento
+            \item \textbf{CosineAnnealingLR}: Scheduler con decadimento più graduale (T\_max=EPOCHS*1.5)
+            \item \textbf{Early stopping}: Patience aumentata a 5 epoche per consentire oscillazioni
+            \item \textbf{Bilanciamento}: Rimozione del 50\% degli esempi dalle classi abbondanti
+        \end{itemize}
+    
+    \item \textbf{Motivazione}: Combinare le tecniche di regolarizzazione più efficaci con un approccio più aggressivo all'augmentation e al bilanciamento delle classi
+    
+    \item \textbf{Risultato}: \textbf{F1-score = 0.779 (Public) / 0.765 (Private)}
+    
+    \item \textbf{Note}: Le performance migliorate rispetto ai precedenti esperimenti dimostrano l'efficacia dell'oversampling delle classi rare combinato con segmenti completamente casuali e tecniche di regolarizzazione potenziate. Questo approccio ha portato al miglior risultato del progetto.
 \end{itemize}
 
 \section{Riepilogo dei risultati}
@@ -422,16 +562,34 @@ v11 & EfficientNet-B0, dataset adattivo multi-segmento, batch size 96, LR differ
 \hline
 v13 & EfficientNet con cutmix e ottimizzazioni (bug nell'implementazione) & 0.464 \\
 \hline
-v14 & Correzione bug, horizontal cutmix, LR ridotti, CosineAnnealingLR, bilanciamento 40\% & \textbf{0.743} \\
+v14 & Correzione bug, horizontal cutmix, LR ridotti, CosineAnnealingLR, bilanciamento 40\% & 0.743 \\
 \hline
 v17 & Fine-tuning parametri Mel spettrogramma e augmentation & 0.741 \\
 \hline
 v18 & Ulteriori piccole ottimizzazioni sui parametri & 0.740 \\
 \hline
+v20 & Data augmentation ottimizzata, fine-tuning parametri addestramento & 0.744 \\
+\hline
+PASST & Transformer con architettura PASST, patch size 16×16, data augmentation ottimizzata & 0.672 \\
+\hline
+EfficientNetV2-S & Upgrade a EfficientNetV2-S pre-addestrato su ImageNet-21k, head più ampia (768 neuroni) & 0.678 \\
+\hline
+v21 & Ottimizzazione del preprocessing con PyTorch/torchaudio, normalizzazione migliorata & 0.749 \\
+\hline
+v22 & Normalizzazione Z-score, temporal smoothing, N\_MELS=192, HOP\_LENGTH=768, randomizzazione completa & 0.733 \\
+\hline
+v23 (SED) & Modello SED dei vincitori, attention block, augmentations audio specifiche, end-to-end & 0.73 \\
+\hline
+v24 & EfficientNet con Oversampling ottimizzato e segmenti randomici & 0.779 (Public) / 0.765 (Private) \\
+\hline
+v25 & EfficientNet-B0 NS JFT, segmenti randomici (p=1.0), XY masking (p=0.4), horizontal cutmix (p=0.4), bilanciamento aggressivo (50\%, threshold=180) & \textbf{0.789} \\
+\hline
+v25 + Post-processing & Tecniche avanzate di post-processing: temporal smoothing con kernel [0.1, 0.2, 0.4, 0.2, 0.1], delta shift TTA (±25ms, ±50ms), padding strategico & \textbf{0.796} \\
+\hline
 \end{tabularx}
 \end{table}
 
-Il miglioramento complessivo dal primo all'ultimo esperimento è stato del +27.7\% in termini di F1-score, con la configurazione ottimale raggiunta nella versione 14.
+Il miglioramento complessivo dal primo all'ultimo esperimento è stato del +28.1\% in termini di F1-score, con la configurazione ottimale raggiunta nella versione 25 (0.789). L'applicazione di tecniche avanzate di post-processing ha ulteriormente incrementato le performance, portando lo score finale a \textbf{0.796}.
 
 \section{Conclusioni e direzioni future}
 
@@ -452,6 +610,8 @@ Il progetto ha mostrato miglioramenti significativi attraverso:
     \item Il bilanciamento strategico (rimozione selettiva) è più efficace del semplice undersampling/oversampling
     \item La regolazione fine dei learning rate e l'uso di scheduler appropriati sono cruciali per il transfer learning
     \item L'ottimizzazione dei parametri del Mel spectrogram ha meno impatto rispetto alle tecniche di augmentation
+    \item \textbf{Non tutte le ottimizzazioni teoriche si traducono in miglioramenti pratici}: La normalizzazione Z-score e il temporal smoothing, pur essendo tecniche consolidate, non hanno migliorato le performance in questo caso specifico
+    \item \textbf{L'importanza della validazione empirica}: Le configurazioni che funzionano per altri dataset audio potrebbero non essere ottimali per il problema specifico
 \end{itemize}
 
 \subsection{Direzioni future}
@@ -463,5 +623,31 @@ Potenziali aree di miglioramento includono:
     \item \textbf{Post-processing}: Ottimizzare le soglie di confidenza per ciascuna classe
     \item \textbf{Unsupervised learning}: Sfruttare train\_soundscapes non etichettati per pre-training
 \end{itemize}
+
+\section{Riferimenti bibliografici}
+
+\begin{thebibliography}{9}
+
+\bibitem{bird25_winner}
+Bird25 OpenVino Ensemble Inference Baseline (LB 0.874).
+\newblock Kaggle Competition Notebook.
+\newblock \url{https://www.kaggle.com/code/kurisew/bird25-openvino-ensemble-infer-baseline-lb-874/notebook}
+
+\bibitem{birdclef2025_discussion}
+BirdClef 2025 - Competition Discussion and Insights.
+\newblock Kaggle Competition Discussion.
+\newblock \url{https://www.kaggle.com/competitions/birdclef-2025/discussion/583699}
+
+\bibitem{birdclef2023_techniques}
+BirdClef 2023 - Advanced Techniques and Methodologies.
+\newblock Kaggle Competition Discussion.
+\newblock \url{http://kaggle.com/competitions/birdclef-2023/discussion/412808}
+
+\end{thebibliography}
+
+\textit{Nota: Questa bibliografia rappresenta i riferimenti principali utilizzati nel progetto. 
+Sono necessari ulteriori riferimenti scientifici per Sound Event Detection (SED), architetture 
+EfficientNet, tecniche di data augmentation specifiche per audio (SpecAugment, Mixup), e 
+la funzione di loss WeightedFocalBCELoss per una bibliografia completa e accademica.}
 
 \end{document}
