@@ -56,14 +56,12 @@ The main folder contains the following files and notebooks:
 *3. **Model architecture**: using CNN or transformer architectures for audio classification*
 *5. **Post-processing**: optimizing final predictions*
 
-## Risorse Utili / Useful Resources
+## Useful Resources
 
 - [Kaggle BirdClef2025 Competition](https://www.kaggle.com/competitions/birdclef-2025)
 - [Xeno-canto.org](https://www.xeno-canto.org/)
 - [iNaturalist](https://www.inaturalist.org/)
 
-## Contributori / Contributors
+## Contributors
 
 - [maurocarlu](https://github.com/maurocarlu)
-
-## Licenza / License
